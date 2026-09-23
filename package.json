@@ -1,0 +1,15 @@
+{
+  "name": "college-notes-sharing-portal",
+  "version": "1.0.0",
+  "description": "Full-stack College Notes Sharing Portal (NoteHub) for 5th-Semester CSE Minor Project",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "server": "npm --prefix server run dev",
+    "client": "npm --prefix client run dev",
+    "seed": "npm --prefix server run seed",
+    "dev": "node -e \"const { spawn } = require('child_process'); const isWin = process.platform === 'win32'; const npm = isWin ? 'npm.cmd' : 'npm'; const s = spawn(npm, ['--prefix', 'server', 'run', 'dev'], { stdio: 'inherit' }); const c = spawn(npm, ['--prefix', 'client', 'run', 'dev'], { stdio: 'inherit' }); process.on('SIGINT', () => { s.kill(); c.kill(); process.exit(); });\""
+  },
+  "keywords": ["college-notes", "react", "express", "mongodb", "tailwind"],
+  "author": "NoteHub Team",
+  "license": "ISC"
+}
