@@ -1,205 +1,259 @@
+import asyncHandler from 'express-async-handler';
+
 import User from '../models/User.js';
 import Note from '../models/Note.js';
 import Subject from '../models/Subject.js';
-import Review from '../models/Review.js';
 import Report from '../models/Report.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
-// @desc    Get dashboard statistics and chart analytics for Admin
-// @route   GET /api/admin/stats
-// @access  Private/Admin
-export const getStats = async (req, res, next) => {
-  try {
-    const totalUsers = await User.countDocuments();
-    const totalStudents = await User.countDocuments({ role: 'student' });
-    const totalNotes = await Note.countDocuments();
-    const totalSubjects = await Subject.countDocuments();
+// =======================================
+// GET ADMIN DASHBOARD STATS
+// =======================================
+export const getStats = asyncHandler(async (req, res) => {
 
-    // Total downloads aggregation
-    const downloadStats = await Note.aggregate([
+  // Only approved notes are considered
+  // available notes.
+  const approvedNoteFilter = {
+    status: 'approved',
+  };
+
+  const [
+    totalUsers,
+    totalNotes,
+    totalSubjects,
+    totalReports,
+    recentUsers,
+    recentNotes,
+    subjectDistribution,
+  ] = await Promise.all([
+
+    // -----------------------------------
+    // TOTAL USERS
+    // -----------------------------------
+    User.countDocuments(),
+
+    // -----------------------------------
+    // TOTAL APPROVED NOTES
+    // -----------------------------------
+    Note.countDocuments(approvedNoteFilter),
+
+    // -----------------------------------
+    // TOTAL SUBJECTS
+    // -----------------------------------
+    Subject.countDocuments(),
+
+    // -----------------------------------
+    // PENDING REPORTS
+    // -----------------------------------
+    Report.countDocuments({
+      status: 'pending',
+    }),
+
+    // -----------------------------------
+    // RECENT USERS
+    // -----------------------------------
+    User.find()
+      .select(
+        'name email role college branch createdAt'
+      )
+      .sort({
+        createdAt: -1,
+      })
+      .limit(5),
+
+    // -----------------------------------
+    // RECENT NOTES
+    //
+    // Admin dashboard can see recent notes
+    // including their current status.
+    // -----------------------------------
+    Note.find()
+      .populate(
+        'subject',
+        'name code'
+      )
+      .populate(
+        'uploadedBy',
+        'name email'
+      )
+      .sort({
+        createdAt: -1,
+      })
+      .limit(5),
+
+    // -----------------------------------
+    // SUBJECT-WISE APPROVED NOTE COUNT
+    // -----------------------------------
+    Note.aggregate([
       {
-        $group: {
-          _id: null,
-          totalDownloads: { $sum: '$downloadCount' },
-        },
+        $match: approvedNoteFilter,
       },
-    ]);
-    const totalDownloads = downloadStats.length > 0 ? downloadStats[0].totalDownloads : 0;
 
-    // Recent activity
-    const recentNotes = await Note.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate('uploadedBy', 'name email')
-      .populate('subject', 'name code');
-
-    const recentUsers = await User.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .select('name email role college branch createdAt');
-
-    const recentReports = await Report.find({ status: 'pending' })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate('note', 'title')
-      .populate('reportedBy', 'name email');
-
-    // Chart 1: Notes uploaded over time (last 6 months or 7 days)
-    const notesOverTime = await Note.aggregate([
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' },
-            day: { $dayOfMonth: '$createdAt' },
-          },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } },
-      { $limit: 10 },
-    ]);
-
-    // Chart 2: Notes per subject
-    const subjectDistribution = await Note.aggregate([
       {
         $group: {
           _id: '$subject',
-          count: { $sum: 1 },
-          downloads: { $sum: '$downloadCount' },
+          count: {
+            $sum: 1,
+          },
         },
       },
-      { $sort: { count: -1 } },
-      { $limit: 6 },
+
       {
         $lookup: {
           from: 'subjects',
           localField: '_id',
           foreignField: '_id',
-          as: 'subjectInfo',
+          as: 'subject',
         },
       },
-      { $unwind: '$subjectInfo' },
+
+      {
+        $unwind: {
+          path: '$subject',
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+
       {
         $project: {
-          name: '$subjectInfo.name',
-          code: '$subjectInfo.code',
+          _id: 0,
+          subject: '$subject.name',
+          code: '$subject.code',
           count: 1,
-          downloads: 1,
         },
       },
-    ]);
 
-    // Chart 3: Registrations over time
-    const registrationsOverTime = await User.aggregate([
       {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' },
-            day: { $dayOfMonth: '$createdAt' },
-          },
-          count: { $sum: 1 },
+        $sort: {
+          count: -1,
         },
       },
-      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } },
-      { $limit: 10 },
-    ]);
+    ]),
+  ]);
 
-    res.status(200).json({
-      success: true,
-      stats: {
-        totalUsers,
-        totalStudents,
-        totalNotes,
-        totalSubjects,
-        totalDownloads,
-      },
-      charts: {
-        notesOverTime,
-        subjectDistribution,
-        registrationsOverTime,
-      },
-      recentActivity: {
-        recentNotes,
-        recentUsers,
-        recentReports,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+  res.status(200).json({
+    success: true,
 
-// @desc    Get all users with search, role filter, pagination
-// @route   GET /api/admin/users
-// @access  Private/Admin
-export const getUsers = async (req, res, next) => {
-  try {
-    const { search, role, page = 1, limit = 10 } = req.query;
-    const query = {};
-
-    if (search && search.trim() !== '') {
-      const regex = new RegExp(search.trim(), 'i');
-      query.$or = [{ name: regex }, { email: regex }, { college: regex }];
-    }
-
-    if (role && role !== 'all') {
-      query.role = role;
-    }
-
-    const pageNum = parseInt(page, 10) || 1;
-    const limitNum = parseInt(limit, 10) || 10;
-    const skip = (pageNum - 1) * limitNum;
-
-    const totalUsers = await User.countDocuments(query);
-    const users = await User.find(query)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum);
-
-    // Get note counts per user
-    const userIds = users.map((u) => u._id);
-    const noteCounts = await Note.aggregate([
-      { $match: { uploadedBy: { $in: userIds } } },
-      { $group: { _id: '$uploadedBy', count: { $sum: 1 } } },
-    ]);
-
-    const countMap = {};
-    noteCounts.forEach((nc) => {
-      countMap[nc._id.toString()] = nc.count;
-    });
-
-    const usersWithStats = users.map((u) => ({
-      ...u.toObject(),
-      notesCount: countMap[u._id.toString()] || 0,
-    }));
-
-    res.status(200).json({
-      success: true,
-      count: users.length,
+    stats: {
       totalUsers,
-      totalPages: Math.ceil(totalUsers / limitNum),
-      currentPage: pageNum,
-      users: usersWithStats,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+      totalNotes,
+      totalSubjects,
+      totalReports,
+    },
 
-// @desc    Delete a user
-// @route   DELETE /api/admin/users/:id
-// @access  Private/Admin
-export const deleteUser = async (req, res, next) => {
-  try {
-    const user = await User.findById(req.params.id);
+    recentUsers,
+    recentNotes,
+    subjectDistribution,
+  });
+});
+
+
+// =======================================
+// GET ALL USERS
+// =======================================
+export const getUsers = asyncHandler(async (req, res) => {
+
+  const {
+    search = '',
+    role,
+    page = 1,
+    limit = 20,
+  } = req.query;
+
+  const query = {};
+
+  // -----------------------------------
+  // SEARCH
+  // -----------------------------------
+  if (search.trim()) {
+    query.$or = [
+      {
+        name: {
+          $regex: search.trim(),
+          $options: 'i',
+        },
+      },
+      {
+        email: {
+          $regex: search.trim(),
+          $options: 'i',
+        },
+      },
+      {
+        college: {
+          $regex: search.trim(),
+          $options: 'i',
+        },
+      },
+    ];
+  }
+
+  // -----------------------------------
+  // ROLE FILTER
+  // -----------------------------------
+  if (
+    role &&
+    ['student', 'admin'].includes(role)
+  ) {
+    query.role = role;
+  }
+
+  const pageNumber = Math.max(
+    Number(page) || 1,
+    1
+  );
+
+  const limitNumber = Math.min(
+    Math.max(Number(limit) || 20, 1),
+    100
+  );
+
+  const skip =
+    (pageNumber - 1) * limitNumber;
+
+  const [
+    users,
+    totalUsers,
+  ] = await Promise.all([
+
+    User.find(query)
+      .select('-password')
+      .sort({
+        createdAt: -1,
+      })
+      .skip(skip)
+      .limit(limitNumber),
+
+    User.countDocuments(query),
+  ]);
+
+  res.status(200).json({
+    success: true,
+
+    count: users.length,
+
+    total: totalUsers,
+
+    page: pageNumber,
+
+    pages: Math.ceil(
+      totalUsers / limitNumber
+    ),
+
+    users,
+  });
+});
+
+
+// =======================================
+// DELETE USER
+// =======================================
+export const deleteUser = asyncHandler(
+  async (req, res) => {
+
+    const user = await User.findById(
+      req.params.id
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -208,185 +262,570 @@ export const deleteUser = async (req, res, next) => {
       });
     }
 
-    // Prevent deleting self
-    if (user._id.toString() === req.user.id) {
+    if (user.role === 'admin') {
       return res.status(400).json({
         success: false,
-        message: 'You cannot delete your own administrative account.',
+        message:
+          'Admin users cannot be deleted from this panel.',
       });
     }
 
-    // Delete user's notes and their files
-    const userNotes = await Note.find({ uploadedBy: user._id });
-    for (const note of userNotes) {
-      const filePath = path.join(__dirname, '..', 'uploads', note.fileUrl);
-      if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch (e) {
-          console.warn('File delete warning:', e.message);
-        }
-      }
-      await Review.deleteMany({ note: note._id });
-      await Report.deleteMany({ note: note._id });
-    }
-    await Note.deleteMany({ uploadedBy: user._id });
-
-    // Delete reviews by user
-    await Review.deleteMany({ user: user._id });
-
-    // Delete user
-    await User.findByIdAndDelete(user._id);
+    await User.findByIdAndDelete(
+      req.params.id
+    );
 
     res.status(200).json({
       success: true,
-      message: 'User and associated data removed successfully',
+      message:
+        'User deleted successfully.',
     });
-  } catch (error) {
-    next(error);
   }
-};
+);
 
-// @desc    Get all notes for Admin moderation
-// @route   GET /api/admin/notes
-// @access  Private/Admin
-export const getAdminNotes = async (req, res, next) => {
-  try {
-    const { search, page = 1, limit = 10 } = req.query;
+
+// =======================================
+// GET ALL ADMIN NOTES
+// =======================================
+//
+// IMPORTANT:
+// Admin Manage All Notes shows:
+// - approved
+// - pending
+// - rejected
+//
+// So Admin can clearly see the status.
+// =======================================
+export const getAdminNotes = asyncHandler(
+  async (req, res) => {
+
+    const {
+      search = '',
+      status,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
     const query = {};
 
-    if (search && search.trim() !== '') {
-      const regex = new RegExp(search.trim(), 'i');
-      query.$or = [{ title: regex }, { description: regex }];
+    // -----------------------------------
+    // STATUS FILTER
+    // -----------------------------------
+    if (
+      status &&
+      [
+        'pending',
+        'approved',
+        'rejected',
+      ].includes(status)
+    ) {
+      query.status = status;
     }
 
-    const pageNum = parseInt(page, 10) || 1;
-    const limitNum = parseInt(limit, 10) || 10;
-    const skip = (pageNum - 1) * limitNum;
+    // -----------------------------------
+    // SEARCH
+    // -----------------------------------
+    if (search.trim()) {
 
-    const totalNotes = await Note.countDocuments(query);
-    const notes = await Note.find(query)
-      .populate('subject', 'name code semester branch')
-      .populate('uploadedBy', 'name email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum);
+      query.$or = [
+        {
+          title: {
+            $regex: search.trim(),
+            $options: 'i',
+          },
+        },
+
+        {
+          description: {
+            $regex: search.trim(),
+            $options: 'i',
+          },
+        },
+
+        {
+          originalFileName: {
+            $regex: search.trim(),
+            $options: 'i',
+          },
+        },
+      ];
+    }
+
+    const pageNumber = Math.max(
+      Number(page) || 1,
+      1
+    );
+
+    const limitNumber = Math.min(
+      Math.max(Number(limit) || 20, 1),
+      100
+    );
+
+    const skip =
+      (pageNumber - 1) * limitNumber;
+
+    const [
+      notes,
+      totalNotes,
+    ] = await Promise.all([
+
+      Note.find(query)
+        .populate(
+          'subject',
+          'name code semester branch'
+        )
+        .populate(
+          'uploadedBy',
+          'name email college branch'
+        )
+        .populate(
+          'reviewedBy',
+          'name email'
+        )
+        .sort({
+          createdAt: -1,
+        })
+        .skip(skip)
+        .limit(limitNumber),
+
+      Note.countDocuments(query),
+    ]);
+
+    const totalPages = Math.ceil(
+      totalNotes / limitNumber
+    );
 
     res.status(200).json({
       success: true,
+
       count: notes.length,
+
+      total: totalNotes,
+
       totalNotes,
-      totalPages: Math.ceil(totalNotes / limitNum),
-      currentPage: pageNum,
+
+      page: pageNumber,
+
+      currentPage: pageNumber,
+
+      pages: totalPages,
+
+      totalPages,
+
       notes,
     });
-  } catch (error) {
-    next(error);
   }
-};
+);
 
-// @desc    Delete inappropriate note (Admin)
-// @route   DELETE /api/admin/notes/:id
-// @access  Private/Admin
-export const deleteAdminNote = async (req, res, next) => {
-  try {
-    const note = await Note.findById(req.params.id);
+
+// =======================================
+// GET PENDING NOTES
+// =======================================
+export const getPendingNotes =
+  asyncHandler(async (req, res) => {
+
+    const notes = await Note.find({
+      status: 'pending',
+    })
+      .populate(
+        'subject',
+        'name code semester branch'
+      )
+      .populate(
+        'uploadedBy',
+        'name email college branch'
+      )
+      .sort({
+        createdAt: -1,
+      });
+
+    res.status(200).json({
+      success: true,
+
+      count: notes.length,
+
+      notes,
+    });
+  });
+
+
+// =======================================
+// APPROVE NOTE
+// =======================================
+export const approveNote = asyncHandler(
+  async (req, res) => {
+
+    const note = await Note.findById(
+      req.params.id
+    );
 
     if (!note) {
       return res.status(404).json({
         success: false,
-        message: 'Note not found',
+        message: 'Note not found.',
       });
     }
 
-    const filePath = path.join(__dirname, '..', 'uploads', note.fileUrl);
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.unlinkSync(filePath);
-      } catch (e) {
-        console.warn('File delete warning:', e.message);
-      }
+    if (note.status === 'approved') {
+      return res.status(400).json({
+        success: false,
+        message:
+          'This note is already approved.',
+      });
     }
 
-    await Review.deleteMany({ note: note._id });
-    await Report.deleteMany({ note: note._id });
-    await Note.findByIdAndDelete(note._id);
+    // -----------------------------------
+    // APPROVE
+    // -----------------------------------
+    note.status = 'approved';
+
+    note.rejectionReason = '';
+
+    note.reviewedBy = req.user._id;
+
+    note.reviewedAt = new Date();
+
+    await note.save();
+
+    const updatedNote =
+      await Note.findById(note._id)
+        .populate(
+          'subject',
+          'name code semester branch'
+        )
+        .populate(
+          'uploadedBy',
+          'name email'
+        )
+        .populate(
+          'reviewedBy',
+          'name email'
+        );
 
     res.status(200).json({
       success: true,
-      message: 'Note deleted by administrator successfully',
-    });
-  } catch (error) {
-    next(error);
-  }
-};
 
-// @desc    Get all reports
-// @route   GET /api/admin/reports
-// @access  Private/Admin
-export const getReports = async (req, res, next) => {
-  try {
-    const { status } = req.query;
+      message:
+        'Note approved successfully. It is now visible to students.',
+
+      note: updatedNote,
+    });
+  }
+);
+
+
+// =======================================
+// REJECT NOTE
+// =======================================
+export const rejectNote = asyncHandler(
+  async (req, res) => {
+
+    const {
+      rejectionReason,
+    } = req.body;
+
+    const note = await Note.findById(
+      req.params.id
+    );
+
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found.',
+      });
+    }
+
+    if (note.status === 'rejected') {
+      return res.status(400).json({
+        success: false,
+        message:
+          'This note is already rejected.',
+      });
+    }
+
+    // -----------------------------------
+    // REJECT
+    // -----------------------------------
+    note.status = 'rejected';
+
+    note.rejectionReason =
+      rejectionReason &&
+      rejectionReason.trim()
+        ? rejectionReason.trim()
+        : 'Note did not meet the portal moderation requirements.';
+
+    note.reviewedBy = req.user._id;
+
+    note.reviewedAt = new Date();
+
+    await note.save();
+
+    const updatedNote =
+      await Note.findById(note._id)
+        .populate(
+          'subject',
+          'name code semester branch'
+        )
+        .populate(
+          'uploadedBy',
+          'name email'
+        )
+        .populate(
+          'reviewedBy',
+          'name email'
+        );
+
+    res.status(200).json({
+      success: true,
+
+      message:
+        'Note rejected successfully.',
+
+      note: updatedNote,
+    });
+  }
+);
+
+
+// =======================================
+// DELETE ADMIN NOTE
+// =======================================
+export const deleteAdminNote =
+  asyncHandler(async (req, res) => {
+
+    const note = await Note.findById(
+      req.params.id
+    );
+
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found.',
+      });
+    }
+
+    // -----------------------------------
+    // DELETE NOTE
+    // -----------------------------------
+    await Note.findByIdAndDelete(
+      req.params.id
+    );
+
+    // -----------------------------------
+    // MARK RELATED REPORTS AS REVIEWED
+    // -----------------------------------
+    await Report.updateMany(
+      {
+        note: req.params.id,
+
+        status: {
+          $in: [
+            'pending',
+            'dismissed',
+          ],
+        },
+      },
+
+      {
+        $set: {
+          status: 'reviewed',
+          reviewedBy: req.user._id,
+          reviewedAt: new Date(),
+        },
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+
+      message:
+        'Note deleted successfully and related reports marked as reviewed.',
+    });
+  });
+
+
+// =======================================
+// GET REPORTS
+// =======================================
+export const getReports = asyncHandler(
+  async (req, res) => {
+
+    const {
+      status,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
     const query = {};
 
-    if (status && status !== 'all') {
+    // -----------------------------------
+    // STATUS FILTER
+    // -----------------------------------
+    if (
+      status &&
+      [
+        'pending',
+        'reviewed',
+        'dismissed',
+      ].includes(status)
+    ) {
       query.status = status;
     }
 
-    const reports = await Report.find(query)
-      .populate({
-        path: 'note',
-        select: 'title subject originalFileName uploadedBy',
-        populate: {
-          path: 'uploadedBy',
-          select: 'name email',
+    const pageNumber = Math.max(
+      Number(page) || 1,
+      1
+    );
+
+    const limitNumber = Math.min(
+      Math.max(Number(limit) || 20, 1),
+      100
+    );
+
+    const skip =
+      (pageNumber - 1) * limitNumber;
+
+    // -----------------------------------
+    // FIX OLD REPORTS
+    // WHERE NOTE WAS ALREADY DELETED
+    // -----------------------------------
+    const existingNoteIds =
+      await Note.find().distinct('_id');
+
+    await Report.updateMany(
+      {
+        note: {
+          $nin: existingNoteIds,
         },
-      })
-      .populate('reportedBy', 'name email')
-      .sort({ createdAt: -1 });
+
+        status: {
+          $in: [
+            'pending',
+            'dismissed',
+          ],
+        },
+      },
+
+      {
+        $set: {
+          status: 'reviewed',
+          reviewedBy: req.user._id,
+          reviewedAt: new Date(),
+        },
+      }
+    );
+
+    // -----------------------------------
+    // GET REPORTS
+    // -----------------------------------
+    const [
+      reports,
+      totalReports,
+    ] = await Promise.all([
+
+      Report.find(query)
+        .populate(
+          'reportedBy',
+          'name email'
+        )
+        .populate(
+          'note',
+          'title originalFileName status'
+        )
+        .populate(
+          'reviewedBy',
+          'name email'
+        )
+        .sort({
+          createdAt: -1,
+        })
+        .skip(skip)
+        .limit(limitNumber),
+
+      Report.countDocuments(query),
+    ]);
 
     res.status(200).json({
       success: true,
+
       count: reports.length,
+
+      total: totalReports,
+
+      page: pageNumber,
+
+      pages: Math.ceil(
+        totalReports / limitNumber
+      ),
+
       reports,
     });
-  } catch (error) {
-    next(error);
   }
-};
+);
 
-// @desc    Update report status
-// @route   PUT /api/admin/reports/:id
-// @access  Private/Admin
-export const updateReportStatus = async (req, res, next) => {
-  try {
+
+// =======================================
+// UPDATE REPORT STATUS
+// =======================================
+export const updateReportStatus =
+  asyncHandler(async (req, res) => {
+
     const { status } = req.body;
-    const validStatuses = ['pending', 'reviewed', 'dismissed', 'actioned'];
 
-    if (!status || !validStatuses.includes(status)) {
+    if (
+      ![
+        'pending',
+        'reviewed',
+        'dismissed',
+      ].includes(status)
+    ) {
       return res.status(400).json({
         success: false,
-        message: `Status must be one of: ${validStatuses.join(', ')}`,
+        message:
+          'Invalid report status.',
       });
     }
 
-    const report = await Report.findById(req.params.id);
+    const report =
+      await Report.findById(
+        req.params.id
+      );
+
     if (!report) {
       return res.status(404).json({
         success: false,
-        message: 'Report not found',
+        message: 'Report not found.',
       });
     }
 
     report.status = status;
+
+    report.reviewedBy = req.user._id;
+
+    report.reviewedAt = new Date();
+
     await report.save();
+
+    const updatedReport =
+      await Report.findById(report._id)
+        .populate(
+          'reportedBy',
+          'name email'
+        )
+        .populate(
+          'note',
+          'title originalFileName status'
+        )
+        .populate(
+          'reviewedBy',
+          'name email'
+        );
 
     res.status(200).json({
       success: true,
-      message: `Report marked as ${status}`,
-      report,
+
+      message:
+        'Report status updated successfully.',
+
+      report: updatedReport,
     });
-  } catch (error) {
-    next(error);
-  }
-};
+  });

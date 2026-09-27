@@ -7,36 +7,100 @@ import Note from '../models/Note.js';
 export const getSubjects = async (req, res, next) => {
   try {
     const { semester, branch } = req.query;
+
     const query = {};
 
     if (semester && semester !== 'all') {
       query.semester = Number(semester);
     }
+
     if (branch && branch !== 'all') {
       query.branch = branch;
     }
 
-    const subjects = await Subject.find(query).sort({ semester: 1, name: 1 });
+    /*
+      =====================================================
+      SUBJECT ORDER
 
-    // Aggregate note count per subject
+      First:
+        Semester ascending
+
+      Then:
+        Subject code ascending
+
+      Example:
+
+      Sem 1
+      BT-101
+      BT-102
+      BT-103
+      BT-104
+      BT-105
+      BT-106
+
+      Sem 2
+      BT-201
+      BT-202
+      BT-204
+      BT-205
+      BT-206
+      =====================================================
+    */
+
+    const subjects = await Subject.find(query).sort({
+      semester: 1,
+      code: 1,
+    });
+
+    // =======================================
+    // COUNT ONLY APPROVED NOTES
+    // =======================================
+    //
+    // Pending notes must NOT appear in the
+    // public subject note count.
+    //
+    // Rejected notes must also NOT appear.
+    //
+    // Older notes without a status are treated
+    // as approved for backward compatibility.
+    // =======================================
+
     const subjectStats = await Note.aggregate([
+      {
+        $match: {
+          $or: [
+            { status: 'approved' },
+            { status: { $exists: false } },
+          ],
+        },
+      },
       {
         $group: {
           _id: '$subject',
-          noteCount: { $sum: 1 },
+          noteCount: {
+            $sum: 1,
+          },
         },
       },
     ]);
 
     const countMap = {};
+
     subjectStats.forEach((s) => {
-      countMap[s._id.toString()] = s.noteCount;
+      if (s._id) {
+        countMap[s._id.toString()] =
+          s.noteCount;
+      }
     });
 
-    const subjectsWithCount = subjects.map((sub) => ({
-      ...sub.toObject(),
-      notesCount: countMap[sub._id.toString()] || 0,
-    }));
+    const subjectsWithCount =
+      subjects.map((sub) => ({
+        ...sub.toObject(),
+
+        // Only approved notes are counted
+        notesCount:
+          countMap[sub._id.toString()] || 0,
+      }));
 
     res.status(200).json({
       success: true,
@@ -48,39 +112,80 @@ export const getSubjects = async (req, res, next) => {
   }
 };
 
+
+// =======================================
+// CREATE SUBJECT
+// =======================================
+
 // @desc    Create a new subject
 // @route   POST /api/subjects
 // @access  Private/Admin
-export const createSubject = async (req, res, next) => {
+export const createSubject = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const { name, code, semester, branch, description } = req.body;
+    const {
+      name,
+      code,
+      semester,
+      branch,
+      description,
+    } = req.body;
 
-    if (!name || !code || !semester || !branch) {
+    if (
+      !name ||
+      !code ||
+      !semester ||
+      !branch
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide subject name, code, semester, and branch.',
+        message:
+          'Please provide subject name, code, semester, and branch.',
       });
     }
 
-    const existingCode = await Subject.findOne({ code: code.trim().toUpperCase() });
+    const existingCode =
+      await Subject.findOne({
+        code: code
+          .trim()
+          .toUpperCase(),
+      });
+
     if (existingCode) {
       return res.status(400).json({
         success: false,
-        message: `A subject with code '${code.trim().toUpperCase()}' already exists.`,
+        message: `A subject with code '${code
+          .trim()
+          .toUpperCase()}' already exists.`,
       });
     }
 
-    const subject = await Subject.create({
-      name: name.trim(),
-      code: code.trim().toUpperCase(),
-      semester: Number(semester),
-      branch: branch.trim(),
-      description: description ? description.trim() : '',
-    });
+    const subject =
+      await Subject.create({
+        name: name.trim(),
+
+        code: code
+          .trim()
+          .toUpperCase(),
+
+        semester:
+          Number(semester),
+
+        branch:
+          branch.trim(),
+
+        description: description
+          ? description.trim()
+          : '',
+      });
 
     res.status(201).json({
       success: true,
-      message: 'Subject created successfully',
+      message:
+        'Subject created successfully',
       subject,
     });
   } catch (error) {
@@ -88,42 +193,96 @@ export const createSubject = async (req, res, next) => {
   }
 };
 
+
+// =======================================
+// UPDATE SUBJECT
+// =======================================
+
 // @desc    Update a subject
 // @route   PUT /api/subjects/:id
 // @access  Private/Admin
-export const updateSubject = async (req, res, next) => {
+export const updateSubject = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const { name, code, semester, branch, description } = req.body;
+    const {
+      name,
+      code,
+      semester,
+      branch,
+      description,
+    } = req.body;
 
-    const subject = await Subject.findById(req.params.id);
+    const subject =
+      await Subject.findById(
+        req.params.id
+      );
+
     if (!subject) {
       return res.status(404).json({
         success: false,
-        message: 'Subject not found',
+        message:
+          'Subject not found',
       });
     }
 
-    if (code && code.trim().toUpperCase() !== subject.code) {
-      const codeCheck = await Subject.findOne({ code: code.trim().toUpperCase() });
+    if (
+      code &&
+      code.trim().toUpperCase() !==
+        subject.code
+    ) {
+      const codeCheck =
+        await Subject.findOne({
+          code: code
+            .trim()
+            .toUpperCase(),
+        });
+
       if (codeCheck) {
         return res.status(400).json({
           success: false,
-          message: `Subject code '${code.trim().toUpperCase()}' is already in use.`,
+          message: `Subject code '${code
+            .trim()
+            .toUpperCase()}' is already in use.`,
         });
       }
-      subject.code = code.trim().toUpperCase();
+
+      subject.code =
+        code
+          .trim()
+          .toUpperCase();
     }
 
-    if (name) subject.name = name.trim();
-    if (semester) subject.semester = Number(semester);
-    if (branch) subject.branch = branch.trim();
-    if (description !== undefined) subject.description = description.trim();
+    if (name) {
+      subject.name =
+        name.trim();
+    }
+
+    if (semester) {
+      subject.semester =
+        Number(semester);
+    }
+
+    if (branch) {
+      subject.branch =
+        branch.trim();
+    }
+
+    if (
+      description !== undefined
+    ) {
+      subject.description =
+        description.trim();
+    }
 
     await subject.save();
 
     res.status(200).json({
       success: true,
-      message: 'Subject updated successfully',
+      message:
+        'Subject updated successfully',
       subject,
     });
   } catch (error) {
@@ -131,21 +290,40 @@ export const updateSubject = async (req, res, next) => {
   }
 };
 
+
+// =======================================
+// DELETE SUBJECT
+// =======================================
+
 // @desc    Delete a subject
 // @route   DELETE /api/subjects/:id
 // @access  Private/Admin
-export const deleteSubject = async (req, res, next) => {
+export const deleteSubject = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const subject = await Subject.findById(req.params.id);
+    const subject =
+      await Subject.findById(
+        req.params.id
+      );
+
     if (!subject) {
       return res.status(404).json({
         success: false,
-        message: 'Subject not found',
+        message:
+          'Subject not found',
       });
     }
 
     // Check if any notes are mapped to this subject
-    const noteCount = await Note.countDocuments({ subject: subject._id });
+    const noteCount =
+      await Note.countDocuments({
+        subject:
+          subject._id,
+      });
+
     if (noteCount > 0) {
       return res.status(400).json({
         success: false,
@@ -153,11 +331,14 @@ export const deleteSubject = async (req, res, next) => {
       });
     }
 
-    await Subject.findByIdAndDelete(subject._id);
+    await Subject.findByIdAndDelete(
+      subject._id
+    );
 
     res.status(200).json({
       success: true,
-      message: 'Subject deleted successfully',
+      message:
+        'Subject deleted successfully',
     });
   } catch (error) {
     next(error);
