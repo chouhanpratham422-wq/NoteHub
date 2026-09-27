@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: 'http://localhost:5000/api',
+  baseURL: 'https://notehub-extk.onrender.com/api',
   headers: {
     'Content-Type': 'application/json',
   },
@@ -34,6 +34,8 @@ api.interceptors.response.use(
       error.response?.data?.message ||
       error.message ||
       'An unexpected error occurred. Please try again.';
+
+    console.error('API Error:', message);
 
     return Promise.reject(error);
   }
